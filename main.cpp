@@ -20,10 +20,12 @@
 #include <algorithm> // Necessary for std::clamp
 #include <fstream>
 #include <array>
+#include <chrono>
 
-const uint32_t WIDTH = 800;
-const uint32_t HEIGHT = 600;
+const uint32_t WIDTH = 1400;
+const uint32_t HEIGHT = 1000;
 const int MAX_FRAMES_IN_FLIGHT = 2;
+float pi = 3.1415926535897932384626433832795;
 
 const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -35,7 +37,7 @@ const bool enableValidationLayers = true;
 #endif
 
 const std::vector<const char*> deviceExtensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME
 };
 
 
@@ -167,9 +169,30 @@ private:
         std::vector<VkPresentModeKHR> presentModes;
     };
 
+    // EVERYTHING AFTER THIS IS MY OWN
+    // 
+    // 
+    // 
+    // 
+    // 
+    // 
+    // 
+    // 
+    // 
     // for texture 0,0 is top left and 1,1 is bottom right
     // else for vertices axes are inverted
+
+    VkBuffer mousePositionBuffer;
+    VkDeviceMemory mousePositionBufferMemory;
+    void* mousePositionBufferMapped;
+
     const std::vector<Vertex> vertices = {
+        // -1 and 1 are bounds of screen at z = 0 (maybe different on z != 0?)
+        {{-1.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+        {{1.0f, -1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{1.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+        {{-1.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+
         {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
         {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
         {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
@@ -181,8 +204,10 @@ private:
     };
 
     const std::vector<uint32_t> indices = {
-        0, 1, 2, 2, 3, 0,
-        4, 5, 6, 6, 7, 4
+        2, 1, 0, 0, 3, 2,
+
+        //0, 1, 2, 2, 3, 0,
+        //4, 5, 6, 6, 7, 4
     };
 
     struct UniformBufferObject {
@@ -190,6 +215,62 @@ private:
         alignas(16) glm::mat4 view;
         alignas(16) glm::mat4 proj;
     };
+
+    struct MousePositionBufferObject {
+        alignas(16) glm::vec4 mousePosition;
+        alignas(16) glm::vec4 playerPosition;
+    };
+
+    //struct ssboObject {
+    //    alignas(4) glm::int32 map[1000];
+    //};
+
+    glm::vec3 playerPosition = glm::vec3(500, 10, 500);
+
+    std::chrono::steady_clock::time_point finishFrame = std::chrono::high_resolution_clock::now();
+    std::chrono::steady_clock::time_point startFrame = std::chrono::high_resolution_clock::now();
+    float millisecondsElapsed = 0;
+    float deltaTime = 0;
+    int frameCount = 0;
+
+    VkDeviceSize ssboBufferSize = 4000000000;
+    VkBuffer ssbo;
+    VkDeviceMemory ssboMemory;
+    void* ssboMapped;
+
+    VkBuffer ssboStagingBuffer;
+    VkDeviceMemory ssboStagingBufferMemory;
+    void* ssboStagingMapped;
+
+    VkDeviceSize rigidBodySsboBufferSize = 4000;
+    VkBuffer rigidBodySsbo;
+    VkDeviceMemory rigidBodySsboMemory;
+    void* rigidBodySsboMapped;
+
+    VkBuffer rigidBodySsboStagingBuffer;
+    VkDeviceMemory rigidBodySsboStagingBufferMemory;
+    void* rigidBodySsboStagingMapped;
+
+    struct RigidBodySquareObject {
+        alignas(16) glm::vec4 centerOfMass;
+        alignas(16) glm::vec4 rotation;
+        alignas(16) glm::vec4 acceleration;
+        alignas(16) glm::vec4 velocity;
+        alignas(4) glm::int32 mass;
+        alignas(4) glm::int32 scale;
+    };
+
+    struct RigidBodySquareObjectCPU {
+        glm::vec4 centerOfMass;
+        glm::vec4 vertices[8];
+        glm::vec4 rotation;
+        glm::vec4 acceleration;
+        glm::vec4 velocity;
+        glm::int32 mass;
+        glm::int32 scale;
+    };
+    RigidBodySquareObjectCPU rigidBodies [1000];
+
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
         auto app = reinterpret_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
@@ -204,6 +285,10 @@ private:
         // store this pointer as window to access framebufferResized (NOT A REAL WINDOW OBV)
         glfwSetWindowUserPointer(window, this);
         glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+        /*glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) {
+            glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        }*/
     }
 
     std::vector<const char*> getRequiredExtensions() {
@@ -289,6 +374,15 @@ private:
         else {
             createInfo.enabledLayerCount = 0;
         }
+
+        // enable shader debugPrintfEXT
+        VkValidationFeatureEnableEXT enabled[] = { VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT };
+        VkValidationFeaturesEXT features = { VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT };
+        features.disabledValidationFeatureCount = 0;
+        features.enabledValidationFeatureCount = 1;
+        features.pDisabledValidationFeatures = nullptr;
+        features.pEnabledValidationFeatures = enabled;
+        createInfo.pNext = &features;
         
         VkResult result = vkCreateInstance(&createInfo, nullptr, &instance);
         if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
@@ -320,7 +414,7 @@ private:
         if (!enableValidationLayers) return;
         VkDebugUtilsMessengerCreateInfoEXT createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
         createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
         createInfo.pfnUserCallback = debugCallback;
         createInfo.pUserData = nullptr; // Optional
@@ -667,10 +761,33 @@ private:
         samplerLayoutBinding.binding = 1;
         samplerLayoutBinding.descriptorCount = 1;
         samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        samplerLayoutBinding.pImmutableSamplers = nullptr;
+        samplerLayoutBinding.pImmutableSamplers = nullptr; // Optional
         samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        std::array<VkDescriptorSetLayoutBinding, 2> bindings = { uboLayoutBinding, samplerLayoutBinding };
+        VkDescriptorSetLayoutBinding mousePositionUboLayoutBinding{};
+        mousePositionUboLayoutBinding.binding = 2;
+        mousePositionUboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        mousePositionUboLayoutBinding.descriptorCount = 1;
+        mousePositionUboLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        mousePositionUboLayoutBinding.pImmutableSamplers = nullptr; // Optional
+
+        VkDescriptorSetLayoutBinding ssboBinding{};
+        ssboBinding.binding = 3;
+        ssboBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ssboBinding.descriptorCount = 1;
+        ssboBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        ssboBinding.pImmutableSamplers = nullptr; // Optional
+
+        VkDescriptorSetLayoutBinding rigidBodySsboBinding{};
+        rigidBodySsboBinding.binding = 4;
+        rigidBodySsboBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        rigidBodySsboBinding.descriptorCount = 1;
+        rigidBodySsboBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        rigidBodySsboBinding.pImmutableSamplers = nullptr; // Optional
+
+
+
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings = { uboLayoutBinding, samplerLayoutBinding, mousePositionUboLayoutBinding, ssboBinding, rigidBodySsboBinding };
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -711,8 +828,8 @@ private:
     }
 
     void createGraphicsPipeline() {
-        auto vertShaderCode = readFile("vert.spv");
-        auto fragShaderCode = readFile("frag.spv");
+        auto vertShaderCode = readFile("C:/Users/joshy/Desktop/VisualStudioSlns/VoxelEngine/vert.spv");
+        auto fragShaderCode = readFile("C:/Users/joshy/Desktop/VisualStudioSlns/VoxelEngine/frag.spv");
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
 
@@ -799,7 +916,7 @@ private:
         // cull back face
         rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
         // like unity
-        //rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        // rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
         // because of ubo.proj flipping y bit (some opengl relic)
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
@@ -824,7 +941,7 @@ private:
 
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachment.blendEnable = VK_FALSE;
+        //colorBlendAttachment.blendEnable = VK_FALSE;
         //colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
         //colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
         //colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD; // Optional
@@ -1067,7 +1184,7 @@ private:
 
     }
 
-    void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+    void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0) {
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -1083,8 +1200,8 @@ private:
 
         vkBeginCommandBuffer(commandBuffer, &beginInfo);
         VkBufferCopy copyRegion{};
-        copyRegion.srcOffset = 0; // Optional
-        copyRegion.dstOffset = 0; // Optional
+        copyRegion.srcOffset = srcOffset;
+        copyRegion.dstOffset = dstOffset;
         copyRegion.size = size;
         vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
         vkEndCommandBuffer(commandBuffer);
@@ -1139,6 +1256,218 @@ private:
         vkFreeMemory(device, stagingBufferMemory, nullptr);
     }
 
+    float hash13(int x, int y, int z)
+    {
+        glm::vec3 p3 = glm::fract(glm::vec3(x,y,z) * .1031f);
+        p3 += glm::dot(p3, glm::vec3(p3.z, p3.y, p3.x) + 31.32f);
+        return glm::fract((p3.x + p3.y) * p3.z);
+    }
+
+    float noise3D(int x, int y, int z) {
+        if (x == 0 || y == 0 || z == 0) {
+            return hash13(x, y, z);
+        }
+        float sum = 0;
+        for (int i = -1; i <= 1; i++) {
+            for (int j = -1; j <= 1; j++) {
+                for (int k = -1; k <= 1; k++) {
+                    sum += hash13(x, y, z);
+                }
+            }
+        }
+        return sum / 27;
+    }
+
+    void createSSBO() {
+        // VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        //createBuffer(bufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ssbo, ssboMemory);
+        //vkMapMemory(device, ssboMemory, 0, bufferSize, 0, &ssboMapped);
+
+
+
+
+        createBuffer(ssboBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ssboStagingBuffer, ssboStagingBufferMemory);
+        vkMapMemory(device, ssboStagingBufferMemory, 0, ssboBufferSize, 0, &ssboStagingMapped);
+        createBuffer(ssboBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ssbo, ssboMemory);
+
+        int* ssboData = new int[1000000000];
+        for (int i = 400; i < 600; i++) {
+            for (int j = 0; j < 1; j++) {
+                for (int k = 400; k < 600; k++) {
+                    /*if (noise3D(i, j, k) > .5) {
+                        ssboData[i * 1000000 + j * 1000 + k] = 1;
+                    }*/
+                    ssboData[i * 1000000 + j * 1000 + k] = 1;
+                }
+            }
+        } 
+        memcpy(ssboStagingMapped, ssboData, 4000000000);
+        copyBuffer(ssboStagingBuffer, ssbo, 4000000000, 0, 0);
+        delete[] ssboData;
+    }
+
+    float temp = 0;
+    void updateSSBO() {
+        return;
+        temp += 4000;
+        int* ssboData = new int[1000];
+        for (int i = 0; i < 1000; i++) {
+            ssboData[i] = i;
+        }
+        memcpy(ssboStagingMapped, ssboData, 4000);
+        copyBuffer(ssboStagingBuffer, ssbo, 4000, 0, temp);
+
+        delete[] ssboData;
+    }
+
+    glm::mat4 rotate(glm::vec4 rotation) {
+        // mat4 declared by column
+        glm::mat4 xRotationMatrix = glm::mat4(1, 0, 0, 0,
+            0, glm::cos(rotation.x), -glm::sin(rotation.x), 0,
+            0, glm::sin(rotation.x), glm::cos(rotation.x), 0,
+            0, 0, 0, 1);
+        glm::mat4 yRotationMatrix = glm::mat4(glm::cos(rotation.y), 0, glm::sin(rotation.y), 0,
+            0, 1, 0, 0,
+            -glm::sin(rotation.y), 0, glm::cos(rotation.y), 0,
+            0, 0, 0, 1);
+        glm::mat4 zRotationMatrix = glm::mat4(glm::cos(rotation.z), glm::sin(rotation.z), 0, 0,
+            -glm::sin(rotation.z), glm::cos(rotation.z), 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1);
+
+        glm::mat4 rotationMatrix = xRotationMatrix * yRotationMatrix * zRotationMatrix;
+        return rotationMatrix;
+    }
+
+    glm::mat4 translate(glm::vec4 position) {
+        glm::mat4 translationMatrix = glm::mat4(1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            position.x, position.y, position.z, 1);
+        return translationMatrix;
+    }
+
+    // think of optimizations
+    // TODO: can be multiple pairs
+    glm::vec2 closestVertices(RigidBodySquareObjectCPU rigidBodySource, RigidBodySquareObjectCPU rigidBodyDest) {
+        glm::vec2 closestIndices = glm::vec2(-1, -1);
+        float minDistance = 1;
+        for (int i = 0; i < 8; i++) {
+            for (int j = 0; j < 8; j++) {
+                float xDistance = rigidBodySource.vertices[i].x + rigidBodySource.centerOfMass.x - rigidBodyDest.vertices[j].x - rigidBodyDest.centerOfMass.x;
+                float yDistance = rigidBodySource.vertices[i].y + rigidBodySource.centerOfMass.y - rigidBodyDest.vertices[j].y - rigidBodyDest.centerOfMass.y;
+                float zDistance = rigidBodySource.vertices[i].z + rigidBodySource.centerOfMass.z - rigidBodyDest.vertices[j].z - rigidBodyDest.centerOfMass.z;
+
+                float distance = glm::sqrt(xDistance * xDistance + yDistance * yDistance + zDistance * zDistance);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestIndices.x = i;
+                    closestIndices.y = j;
+                }
+            }
+        }
+        return closestIndices;
+    }
+    // assume all rigidBodies are same shape and size
+    // when vertex touches or inside face
+    //     idea is to transform primary vertex to secondary body space and check if inside unit cube
+    // TODO: when edge touches edge or inside face
+    glm::vec4 detectCollision(RigidBodySquareObjectCPU primary, RigidBodySquareObjectCPU secondary) {
+        glm::vec2 closestIndices = closestVertices(primary, secondary);
+        glm::vec4 translatedVertex = primary.vertices[(int)closestIndices.x] + primary.centerOfMass - secondary.centerOfMass;
+        glm::mat4 inverseRotationMatrix = rotate(-secondary.rotation);
+        glm::vec4 transformedVertex = inverseRotationMatrix * translatedVertex;
+        if (transformedVertex.x < .5 && transformedVertex.x > -.5 && transformedVertex.y < .5 && transformedVertex.y > -.5 && transformedVertex.z < .5 && transformedVertex.z > -.5) {
+            return transformedVertex;
+        }
+        return glm::vec4(-1, -1, -1, -1);
+    }
+
+    void createRigidBodySSBO() {
+        createBuffer(rigidBodySsboBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, rigidBodySsboStagingBuffer, rigidBodySsboStagingBufferMemory);
+        vkMapMemory(device, rigidBodySsboStagingBufferMemory, 0, rigidBodySsboBufferSize, 0, &rigidBodySsboStagingMapped);
+        createBuffer(rigidBodySsboBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, rigidBodySsbo, rigidBodySsboMemory);
+
+        RigidBodySquareObject rigidBodySsboData[3];
+        rigidBodySsboData[0] = {
+            glm::vec4(500, 9, 505, 0),
+            glm::vec4(0, pi / 4, 0, 0),
+            glm::vec4(0, 0, 0, 0),
+            glm::vec4(0, 0, 0, 0),
+            glm::int32(1),
+            glm::int32(1)
+        };
+        rigidBodySsboData[1] = {
+            glm::vec4(500.99, 9.6, 505.99, 0),
+            glm::vec4(0, 0, 0, 0),
+            glm::vec4(0, 0, 0, 0),
+            glm::vec4(0, 0, 0, 0),
+            glm::int32(1),
+            glm::int32(1)
+        };
+        /*
+        rigidBodySsboData[2] = {
+            glm::vec4(14, 30, 0, 0),
+            glm::vec4(60, 0, 0, 0),
+            glm::vec4(0, 0, 0, 0),
+            glm::vec4(0, 0, 0, 0),
+            glm::int32(1)
+        };*/
+
+        for (int i = 0; i < 3; i++) {
+            rigidBodies[i].centerOfMass = rigidBodySsboData[i].centerOfMass;
+            rigidBodies[i].rotation = rigidBodySsboData[i].rotation;
+            rigidBodies[i].acceleration = rigidBodySsboData[i].acceleration;
+            rigidBodies[i].velocity = rigidBodySsboData[i].velocity;
+            rigidBodies[i].mass = rigidBodySsboData[i].mass;
+            rigidBodies[i].scale = rigidBodySsboData[i].scale;
+            for (int x = 0; x <= 1; x++) {
+                for (int y = 0; y <= 1; y++) {
+                    for (int z = 0; z <= 1; z++) {
+                        rigidBodies[i].vertices[x * 4 + y * 2 + z] = glm::vec4((float)x - .5f, (float)y - .5f, (float)z - .5f, 0);
+                    }
+                }
+            }
+        }
+
+        memcpy(rigidBodySsboStagingMapped, &rigidBodySsboData, sizeof(RigidBodySquareObject) * 3);
+        copyBuffer(rigidBodySsboStagingBuffer, rigidBodySsbo, sizeof(RigidBodySquareObject) * 3, 0, 0);
+    }
+
+    void physics() {
+
+    }
+
+    void updateRigidBodySSBO() {
+        
+        rigidBodies[0].rotation += glm::vec4(1 * deltaTime, 1 * deltaTime, .0, 0);
+        glm::mat4 rm = rotate(rigidBodies[0].rotation);
+        for (int x = 0; x <= 1; x++) {
+            for (int y = 0; y <= 1; y++) {
+                for (int z = 0; z <= 1; z++) {
+                    rigidBodies[0].vertices[x * 4 + y * 2 + z] = glm::vec4((float)x - .5f, (float)y - .5f, (float)z - .5f, 0) * rm;
+                }
+            }
+        }
+
+        RigidBodySquareObject rigidBodySsboData[3];
+        for (int i = 0; i < 3; i++) {
+            rigidBodySsboData[i].centerOfMass = rigidBodies[i].centerOfMass;
+            rigidBodySsboData[i].rotation = rigidBodies[i].rotation;
+            rigidBodySsboData[i].acceleration = rigidBodies[i].acceleration;
+            rigidBodySsboData[i].velocity = rigidBodies[i].velocity;
+            rigidBodySsboData[i].mass = rigidBodies[i].mass;
+            rigidBodySsboData[i].scale = rigidBodies[i].scale;
+        }
+
+        if (detectCollision(rigidBodies[0], rigidBodies[1]) != glm::vec4(-1, -1, -1, -1)) {
+            std::cout << "COLLISION" << std::endl;
+        }
+
+        memcpy(rigidBodySsboStagingMapped, &rigidBodySsboData, sizeof(RigidBodySquareObject) * 3);
+        copyBuffer(rigidBodySsboStagingBuffer, rigidBodySsbo, sizeof(RigidBodySquareObject) * 3, 0, 0);
+    }
+
     void createUniformBuffers() {
         VkDeviceSize bufferSize = sizeof(UniformBufferObject);
         uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
@@ -1168,12 +1497,66 @@ private:
 
     }
 
+    void createMousePositionBuffer() {
+        createBuffer(sizeof(MousePositionBufferObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, mousePositionBuffer, mousePositionBufferMemory);
+        vkMapMemory(device, mousePositionBufferMemory, 0, sizeof(MousePositionBufferObject), 0, &mousePositionBufferMapped);
+    }
+
+    void updateMousePositionBuffer() {
+        MousePositionBufferObject ubo{};
+        double xpos, ypos;
+        glfwGetCursorPos(window, &xpos, &ypos);
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(window, &width, &height);
+        float xpos4byte = static_cast<float>(xpos);
+        float ypos4byte = static_cast<float>(ypos) * -1.0 + height;
+        ubo.mousePosition = glm::highp_vec4(xpos4byte, ypos4byte, width, height);
+
+        // duplicate logic in fragment shader
+        glm::vec2 muv = glm::vec2(ubo.mousePosition.x, ubo.mousePosition.y) / glm::vec2(ubo.mousePosition.z, ubo.mousePosition.w) - glm::vec2(.5, .5);
+        glm::vec2 lookAngle = glm::vec2(2.0 * pi * muv.x, 2.0 * pi * muv.y);
+        glm::mat4 xz_rotation_matrix_forward = glm::rotate(glm::mat4(1.0f), -lookAngle.x, glm::vec3(0,1,0));
+        glm::mat4 xz_rotation_matrix_right = glm::rotate(glm::mat4(1.0f), -lookAngle.x - pi / 2.0f, glm::vec3(0, 1, 0));
+        glm::vec3 xz_direction_forward = glm::vec3(glm::vec4(0, 0, 1, 1.0f) * xz_rotation_matrix_forward);
+        glm::vec3 xz_direction_right = glm::vec3(glm::vec4(0, 0, 1, 1.0f) * xz_rotation_matrix_right);
+
+        float speed = 10.0f;
+        int state = glfwGetKey(window, GLFW_KEY_A);
+        if (state == GLFW_PRESS)
+        {
+            playerPosition -= speed * xz_direction_right * deltaTime;
+        }
+        state = glfwGetKey(window, GLFW_KEY_D);
+        if (state == GLFW_PRESS)
+        {
+            playerPosition += speed * xz_direction_right * deltaTime;
+        }
+        state = glfwGetKey(window, GLFW_KEY_W);
+        if (state == GLFW_PRESS)
+        {
+            playerPosition += speed * xz_direction_forward * deltaTime;
+        }
+        state = glfwGetKey(window, GLFW_KEY_S);
+        if (state == GLFW_PRESS)
+        {
+            playerPosition -= speed * xz_direction_forward * deltaTime;
+        }
+
+        ubo.playerPosition = glm::highp_vec4(playerPosition[0], playerPosition[1], playerPosition[2], 0);
+
+
+        memcpy(mousePositionBufferMapped, &ubo, sizeof(ubo));
+    }
+
     void createDescriptorPool() {
         std::array<VkDescriptorPoolSize, 2> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         poolSizes[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         poolSizes[1].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        // not needed???
+        //poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        //poolSizes[2].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1211,8 +1594,22 @@ private:
             imageInfo.imageView = textureImageView;
             imageInfo.sampler = textureSampler;
 
-            std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+            VkDescriptorBufferInfo mousePositionBufferInfo{};
+            mousePositionBufferInfo.buffer = mousePositionBuffer;
+            mousePositionBufferInfo.offset = 0;
+            mousePositionBufferInfo.range = sizeof(MousePositionBufferObject);
 
+            VkDescriptorBufferInfo ssboInfo{};
+            ssboInfo.buffer = ssbo;
+            ssboInfo.offset = 0;
+            ssboInfo.range = ssboBufferSize;
+
+            VkDescriptorBufferInfo rigidBodySsboInfo{};
+            rigidBodySsboInfo.buffer = rigidBodySsbo;
+            rigidBodySsboInfo.offset = 0;
+            rigidBodySsboInfo.range = rigidBodySsboBufferSize;
+
+            std::array<VkWriteDescriptorSet, 5> descriptorWrites{};
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = descriptorSets[i];
             descriptorWrites[0].dstBinding = 0;
@@ -1229,6 +1626,31 @@ private:
             descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             descriptorWrites[1].descriptorCount = 1;
             descriptorWrites[1].pImageInfo = &imageInfo;
+
+            descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[2].dstSet = descriptorSets[i];
+            descriptorWrites[2].dstBinding = 2;
+            descriptorWrites[2].dstArrayElement = 0;
+            descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            descriptorWrites[2].descriptorCount = 1;
+            descriptorWrites[2].pBufferInfo = &mousePositionBufferInfo;
+
+            descriptorWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[3].dstSet = descriptorSets[i];
+            descriptorWrites[3].dstBinding = 3;
+            descriptorWrites[3].dstArrayElement = 0;
+            descriptorWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            descriptorWrites[3].descriptorCount = 1;
+            descriptorWrites[3].pBufferInfo = &ssboInfo;
+
+            descriptorWrites[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[4].dstSet = descriptorSets[i];
+            descriptorWrites[4].dstBinding = 4;
+            descriptorWrites[4].dstArrayElement = 0;
+            descriptorWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            descriptorWrites[4].descriptorCount = 1;
+            descriptorWrites[4].pBufferInfo = &rigidBodySsboInfo;
+
 
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
         }
@@ -1274,7 +1696,7 @@ private:
 
     void createTextureImage() {
         int texWidth, texHeight, texChannels;
-        stbi_uc* pixels = stbi_load("cs2.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        stbi_uc* pixels = stbi_load("C:/Users/joshy/Desktop/VisualStudioSlns/VoxelEngine/cs2.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
         VkDeviceSize imageSize = texWidth * texHeight * 4;
         if (!pixels) {
             throw std::runtime_error("failed to load texture image!");
@@ -1540,6 +1962,9 @@ private:
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
+        createMousePositionBuffer();
+        createSSBO();
+        createRigidBodySSBO();
         createDescriptorPool();
         createDescriptorSets();
         createCommandBuffers();
@@ -1547,6 +1972,17 @@ private:
     }
 
     void drawFrame() {
+        finishFrame = std::chrono::high_resolution_clock::now();
+        frameCount++;
+        deltaTime = static_cast<float>(std::chrono::duration_cast<std::chrono::microseconds>(finishFrame - startFrame).count()) / 1000000;
+        millisecondsElapsed += deltaTime;
+        if (millisecondsElapsed > 1) {
+            std::cout << "FPS - " << frameCount << std::endl;
+            frameCount = 0;
+            millisecondsElapsed = 0;
+        }
+        startFrame = std::chrono::high_resolution_clock::now();
+
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
@@ -1560,6 +1996,9 @@ private:
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
         updateUniformBuffer(currentFrame);
+        updateMousePositionBuffer();
+        updateSSBO();
+        updateRigidBodySSBO();
 
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
@@ -1647,9 +2086,6 @@ private:
     }
 
     void mainLoop() {
-        bool up = true;
-        float x = 0;
-        uint_least8_t* array = new uint_least8_t[1000000000];
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
 
@@ -1660,25 +2096,6 @@ private:
             createVertexBuffer();*/
             
             drawFrame();
-
-            if (x >= 1) {
-                up = false;
-            }
-            if (x <= -1) {
-                up = true;
-            }
-
-            // consume cpu
-            for (int i = 0; i < 2000000; i++) {
-                array[i % 1000000 * 81 % 1000000000] = i / 2 % 256;
-            }
-
-            if (up) {
-                x+=.01f;
-            } 
-            else {
-                x-=.01f;
-            }
         }
 
         vkDeviceWaitIdle(device);
@@ -1695,6 +2112,14 @@ private:
             vkDestroyBuffer(device, uniformBuffers[i], nullptr);
             vkFreeMemory(device, uniformBuffersMemory[i], nullptr);
         }
+
+        vkDestroyBuffer(device, mousePositionBuffer, nullptr);
+        vkFreeMemory(device, mousePositionBufferMemory, nullptr);
+        vkDestroyBuffer(device, ssbo, nullptr);
+        vkFreeMemory(device, ssboMemory, nullptr);
+        vkDestroyBuffer(device, rigidBodySsbo, nullptr);
+        vkFreeMemory(device, rigidBodySsboMemory, nullptr);
+
 
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
